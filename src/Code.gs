@@ -49,6 +49,8 @@ const CONFIG = {
   BOUNCE_TEMP_DAYS: 14,           // alamat bounce SEMENTARA (inbox penuh dll) dilewati selama ini
 
   // ---- KIRIM BERTAHAP (menu "Kirim bertahap") ----
+  // Ini hanya nilai bawaan pertama kali: jumlah & jeda ditanyakan setiap menu 2b diklik,
+  // dan pilihan terakhir diingat sebagai nilai bawaan berikutnya.
   BATCH_SIZE: 50,                 // jumlah email per putaran
   BATCH_INTERVAL_MIN: 10,         // jeda antar putaran (menit)
 
@@ -1072,6 +1074,29 @@ function fmtWaktu_(ms) {
   return Utilities.formatDate(new Date(ms), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
 }
 
+// Batas isian di kotak "Kirim bertahap".
+// Satu putaran harus muat dalam 1 eksekusi (~5 menit, sekitar 300-500 email); kalau tidak muat,
+// putaran itu terpotong dan sisanya ikut putaran berikutnya.
+const BERTAHAP_MAX_SIZE = 400;   // email per putaran
+const BERTAHAP_MAX_GAP = 720;    // jeda antar putaran (menit) = 12 jam
+
+// Minta angka lewat kotak isian. Kosong = nilai bawaan. Batal/tutup = null.
+function mintaAngka_(ui, judul, pesan, bawaan, min, max) {
+  while (true) {
+    const res = ui.prompt(judul,
+      pesan + '\n\nIsi angka ' + min + ' sampai ' + max + '. Kosongkan lalu OK untuk memakai ' + bawaan + '.',
+      ui.ButtonSet.OK_CANCEL);
+    if (res.getSelectedButton() !== ui.Button.OK) return null;
+    const teks = String(res.getResponseText() || '').trim();
+    if (teks === '') return bawaan;
+    if (/^\d+$/.test(teks)) {
+      const n = parseInt(teks, 10);
+      if (n >= min && n <= max) return n;
+    }
+    ui.alert('Isian tidak valid: "' + teks + '"\nIsi angka bulat ' + min + ' sampai ' + max + '.');
+  }
+}
+
 function kirimBertahap() {
   const ui = SpreadsheetApp.getUi();
   try {
@@ -1085,20 +1110,45 @@ function kirimBertahap() {
     if (ready === 0) { ui.alert('Tidak ada baris yang siap dikirim.'); return; }
 
     const recent = sentLast24h_(readTable_(), new Date());
-    const size = CONFIG.BATCH_SIZE, gap = CONFIG.BATCH_INTERVAL_MIN;
+
+    // Nilai bawaan kotak isian = pilihan terakhir (kalau ada), selain itu CONFIG.
+    let pref = {};
+    try { pref = JSON.parse(props.getProperty('BERTAHAP_PREF') || '{}'); } catch (e) { pref = {}; }
+    const defSize = Math.min(pref.size || CONFIG.BATCH_SIZE, BERTAHAP_MAX_SIZE);
+    const defGap = Math.min(pref.gap || CONFIG.BATCH_INTERVAL_MIN, BERTAHAP_MAX_GAP);
+
+    const size = mintaAngka_(ui, 'Kirim bertahap (1/2)',
+      'Berapa email per putaran?\nSiap dikirim: ' + ready, defSize, 1, BERTAHAP_MAX_SIZE);
+    if (size === null) return;
+    const gap = mintaAngka_(ui, 'Kirim bertahap (2/2)',
+      'Jeda antar putaran berapa menit?\nPer putaran: ' + size + ' email', defGap, 1, BERTAHAP_MAX_GAP);
+    if (gap === null) return;
+
     const batches = Math.ceil(ready / size);
     const minutes = (batches - 1) * gap;
+    const room = CONFIG.DAILY_CAP > 0 ? Math.max(0, CONFIG.DAILY_CAP - recent) : null;
+    let catatan = '';
+    if (room !== null && ready > room) {
+      catatan += '\n\nPERHATIAN: ruang kirim 24 jam sekarang hanya ' + room + ' email. Proses akan berhenti ' +
+                 '(batas harian) setelah sekitar ' + room + ' email, sisanya harus dimulai ulang nanti.';
+    }
+    if (size > 100) {
+      catatan += '\n\nCatatan: laporan limit Gmail hanya dicek di antara putaran. Makin besar putaran, ' +
+                 'makin banyak email yang sudah terkirim sebelum skrip sempat berhenti bila kena limit.';
+    }
     const ans = ui.alert(
       'Kirim bertahap',
       'Siap dikirim: ' + ready +
       '\nPer putaran: ' + size + ' email, jeda ' + gap + ' menit' +
       '\nPerkiraan: ' + batches + ' putaran, sekitar ' + minutes + ' menit (' + (minutes / 60).toFixed(1) + ' jam)' +
       '\nTerkirim 24 jam terakhir: ' + recent + (CONFIG.DAILY_CAP > 0 ? ' (batas ' + CONFIG.DAILY_CAP + ')' : '') +
+      catatan +
       '\n\nPutaran pertama langsung berjalan sekarang. Setelah itu proses berjalan sendiri di server Google, ' +
       'jadi Sheet boleh ditutup.\n\nMulai?',
       ui.ButtonSet.YES_NO);
     if (ans !== ui.Button.YES) return;
 
+    props.setProperty('BERTAHAP_PREF', JSON.stringify({ size: size, gap: gap }));
     props.setProperty('BERTAHAP', JSON.stringify({
       size: size, gap: gap, startedAt: Date.now(), batches: 0, sent: 0, failed: 0, skipped: 0
     }));
@@ -1171,6 +1221,7 @@ function bertahapTeks_() {
   if (raw) {
     const st = JSON.parse(raw);
     return 'BERJALAN' +
+      '\nPer putaran: ' + st.size + ' email, jeda ' + st.gap + ' menit' +
       '\nPutaran selesai: ' + st.batches +
       '\nTerkirim: ' + st.sent + ' | Gagal: ' + st.failed + ' | Dilewati: ' + st.skipped +
       (st.nextRun ? '\nPutaran berikutnya sekitar: ' + fmtWaktu_(st.nextRun) : '') +

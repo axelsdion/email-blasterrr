@@ -53,3 +53,10 @@ Hati-hati: `clasp push` menimpa semua file di proyek Apps Script dengan isi `src
 - Jaga total kiriman semua template di bawah `DAILY_CAP` (1.400) per 24 jam bergulir; jangan dua blast besar dalam satu pagi.
 - Angka promo harus persis dari banner resmi dan disetujui Compliance/Legal (OJK).
 - Fitur penanda bounce dan kirim bertahap baru diuji dengan simulasi, belum diverifikasi dengan Gmail asli.
+
+## Perubahan sejak dokumen serah terima
+
+- **Menu 2b. Kirim bertahap** sekarang menanyakan jumlah email per putaran (1–400) dan jeda antar putaran
+  (1–720 menit) setiap kali diklik. Kotak dikosongkan = pakai nilai bawaan; pilihan terakhir diingat
+  (Script Property `BERTAHAP_PREF`). `CONFIG.BATCH_SIZE` / `BATCH_INTERVAL_MIN` kini hanya nilai bawaan pertama.
+  Konfirmasi memberi peringatan bila ruang kirim 24 jam lebih kecil dari jumlah siap kirim, atau putaran > 100 email.
