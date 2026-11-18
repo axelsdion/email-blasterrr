@@ -34,9 +34,10 @@ const CONFIG = {
   // (1 = 'Template', 2 = 'Template2', 3 = 'Template3', ...) atau nama lengkapnya.
   TEMPLATES: {
     'Template':  { subject: '{{Nama}}, limit kredit Anda siap dipakai promo 11.11!' },   // Template 1: Promo 11.11 Infinix
-    'Template2': { subject: '[HARI INI] Promo 11.11 Spesial Customer Setia!' }           // Template 2: Promo 11.11 TECNO
-    // Template baru? Tambahkan koma di akhir baris Template2, lalu tulis baris baru, contoh:
-    // 'Template3': { subject: 'Subjek template 3 untuk {{Nama}}' }
+    'Template2': { subject: '[HARI INI] Promo 11.11 Spesial Customer Setia!' },          // Template 2: Promo 11.11 TECNO
+    'Template3': { subject: '{{Nama}}, VIVO V80 Lite 5G 10000mAh kini di Kreditplus!' } // Template 3: vivo V80 Lite 5G (promo 22 Okt - 30 Nov 2026)
+    // Template baru? Tambahkan koma di akhir baris Template3, lalu tulis baris baru, contoh:
+    // 'Template4': { subject: 'Subjek template 4 untuk {{Nama}}' }
   },
 
   // ---- BATAS KIRIM ----

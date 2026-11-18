@@ -17,8 +17,10 @@ batas kirim 24 jam bergulir, OptOut dari balasan "STOP", dan penanda bounce otom
 | `src/Code.gs` | Seluruh logika (menu, kirim, penjadwal, kirim bertahap, batas 24 jam, OptOut, bounce) | file `Code.gs` |
 | `src/Template.html` | Template 1: Promo 11.11 gadget Infinix | file HTML bernama `Template` |
 | `src/Template2.html` | Template 2: Promo 11.11 Super Deal TECNO | file HTML bernama `Template2` |
+| `src/Template3.html` | Template 3: vivo V80 Lite 5G 10000mAh (promo 22 Okt – 30 Nov 2026) | file HTML bernama `Template3` |
 | `src/appsscript.json` | Manifest (zona waktu `Asia/Jakarta`, runtime V8) | manifest proyek (opsional) |
 | `docs/Serah_Terima_Proyek_Email_Blasting.md` | Dokumen serah terima lengkap | – |
+| `docs/banners/` | Banner asli per template, acuan teks & angka promo | – |
 | `CLAUDE.md` | Aturan kerja untuk Claude yang melanjutkan proyek ini | – |
 
 ## Arsitektur singkat
@@ -39,8 +41,8 @@ Kolom `Data` (header harus persis): `Email`, `Status`, `Waktu Kirim`, `Keteranga
 1. Buat Google Sheet dengan akun pengirim, ganti nama tab menjadi `Data`, isi header di atas.
 2. **File → Settings → Time zone → (GMT+07:00) Jakarta.**
 3. **Extensions → Apps Script** → tempel `src/Code.gs` ke `Code.gs`, **ganti `SENDER_NAME`** di `CONFIG`.
-4. Tambah file HTML `Template` dan `Template2`, tempel isi `src/Template.html` dan `src/Template2.html`.
-5. **Ganti penanda sebelum kirim**: `GANTI-DENGAN-URL-BANNER` (kedua template) dan
+4. Tambah file HTML `Template`, `Template2`, `Template3`, tempel isi file `src/` yang sesuai.
+5. **Ganti penanda sebelum kirim**: `GANTI-DENGAN-URL-BANNER` (semua template) dan
    `GANTI-URL-FOTO-PRODUK` (Template 1; isi atau hapus blok fotonya). Skrip **tidak** mendeteksi penanda ini.
 6. Refresh Sheet → menu **📧 Email Blast** → **1. Kirim email TEST** → beri semua izin (lihat SOP 7.1 di dokumen).
 
@@ -60,3 +62,5 @@ Hati-hati: `clasp push` menimpa semua file di proyek Apps Script dengan isi `src
   (1–720 menit) setiap kali diklik. Kotak dikosongkan = pakai nilai bawaan; pilihan terakhir diingat
   (Script Property `BERTAHAP_PREF`). `CONFIG.BATCH_SIZE` / `BATCH_INTERVAL_MIN` kini hanya nilai bawaan pertama.
   Konfirmasi memberi peringatan bila ruang kirim 24 jam lebih kecil dari jumlah siap kirim, atau putaran > 100 email.
+- **Template 3 (vivo V80 Lite 5G)** ditambahkan dan didaftarkan di `CONFIG.TEMPLATES`
+  (subjek `{{Nama}}, VIVO V80 Lite 5G 10000mAh kini di Kreditplus!`). Periode promo berakhir **30 November 2026**.
