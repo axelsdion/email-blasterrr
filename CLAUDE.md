@@ -13,6 +13,13 @@ Baca dulu `docs/Serah_Terima_Proyek_Email_Blasting.md` Bagian 1–3, 5, dan 9. K
 - Jangan ubah perilaku inti tanpa menguji logika baru dengan simulasi/mock (Node) terlebih dahulu.
 - Kuota Apps Script ≠ batas Gmail. Batas kirim dijaga oleh `DAILY_CAP` (jendela 24 jam bergulir dari kolom `Waktu Kirim`).
 - `BOUNCE` dan `BOUNCE_SEMENTARA` tetap dihitung dalam 24 jam; `GAGAL_LIMIT` dan `FAILED` tidak.
+- Semua alamat di `DaftarBounce` (termasuk SEMENTARA) diblokir selamanya (`BOUNCE_TEMP_DAYS: 0`), atas permintaan pengguna. `GAGAL_LIMIT` tidak pernah masuk daftar.
+- Hitungan 24 jam = nilai terbesar dari sheet `Data` dan tab `RiwayatKirim` (pengguna sering menghapus baris di `Data`).
+- Data konsumen di-recycle: email yang sama boleh dikirim berkali-kali. `DUPLIKAT` hanya bila alamat yang sama
+  dikirimi kurang dari `MIN_RESEND_DAYS` hari lalu. Status tetap `SENT`; urutan kiriman ada di Keterangan ("Kiriman ke-N").
+- Kuota Apps Script dihitung per PENERIMA: salinan BCC memakai 1 kuota tambahan, tapi tidak menambah hitungan `DAILY_CAP`.
+  `sendBatch_` melacak `quotaLeft` dan `capLeft` terpisah.
+- `DaftarBounce`, `DaftarOptOut`, `RiwayatKirim` adalah sumber kebenaran lintas tempelan data; jangan menyimpan status penting hanya di sheet `Data`.
 
 ## Aturan template HTML (Bagian 6.2 dokumen)
 - Lebar maks 600 px, `<table role="presentation">`, gaya inline, tanpa JS/form/font eksternal.
