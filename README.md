@@ -21,6 +21,7 @@ batas kirim 24 jam bergulir, OptOut dari balasan "STOP", dan penanda bounce otom
 | `src/appsscript.json` | Manifest (zona waktu `Asia/Jakarta`, runtime V8) | manifest proyek (opsional) |
 | `docs/Serah_Terima_Proyek_Email_Blasting.md` | Dokumen serah terima lengkap | – |
 | `docs/banners/` | Banner asli per template, acuan teks & angka promo | – |
+| `docs/Panduan_BCC_dan_Label_Gmail.md` | Panduan salinan BCC + filter & label Gmail | – |
 | `CLAUDE.md` | Aturan kerja untuk Claude yang melanjutkan proyek ini | – |
 
 ## Arsitektur singkat
@@ -80,3 +81,7 @@ Hati-hati: `clasp push` menimpa semua file di proyek Apps Script dengan isi `src
 - **Semua bounce = blacklist.** `BOUNCE_TEMP_DAYS` kini bawaan `0`: alamat di `DaftarBounce` tidak pernah dikirimi
   lagi, termasuk jenis SEMENTARA (inbox penuh, pengiriman tertunda). Bounce karena batas kirim akun kita sendiri
   (`GAGAL_LIMIT`) tetap tidak masuk daftar. Isi angka > 0 untuk kembali ke aturan lama (SEMENTARA dicoba lagi).
+- **Salinan BCC untuk pantauan.** Email blast di-BCC ke alamat pengirim + `+blast` (atau `CONFIG.BCC_EMAIL`).
+  Bawaan `BCC_SETIAP: 50` = 1 dari tiap 50 email + email pertama tiap template per putaran; `1` = semua email
+  (memakai 2 kuota Apps Script per email, kapasitas ±725/hari); `0` = mati. Panduan filter & label Gmail:
+  [`docs/Panduan_BCC_dan_Label_Gmail.md`](docs/Panduan_BCC_dan_Label_Gmail.md).

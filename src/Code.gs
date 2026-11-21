@@ -65,6 +65,17 @@ const CONFIG = {
   OPTOUT_SHEET: 'DaftarOptOut',   // tab alamat yang minta berhenti (dibuat otomatis)
   MIN_RESEND_DAYS: 7,             // email yang sama baru boleh dikirimi lagi setelah sekian hari (0 = tanpa jeda)
 
+  // ---- SALINAN BCC UNTUK PANTAUAN ----
+  // Salinan email blast dikirim (BCC, tidak terlihat konsumen) ke alamat ini.
+  // Kosong = alamat pengirim + "+blast", mis. nama+blast@kpvendor.id (masuk inbox pengirim, mudah difilter).
+  BCC_EMAIL: '',
+  // Seberapa sering di-BCC:
+  //   0  = BCC mati
+  //   1  = SEMUA email di-BCC. Kuota Apps Script dihitung per penerima, jadi tiap email memakai 2 kuota
+  //        dan kapasitas kirim harian turun sekitar setengah (±700 email/hari).
+  //   50 = 1 dari tiap 50 email, ditambah email pertama tiap template di setiap putaran kirim.
+  BCC_SETIAP: 50,
+
   // ---- KIRIM BERTAHAP (menu "Kirim bertahap") ----
   // Ini hanya nilai bawaan pertama kali: jumlah & jeda ditanyakan setiap menu 2b diklik,
   // dan pilihan terakhir diingat sebagai nilai bawaan berikutnya.
@@ -149,6 +160,7 @@ function sendNow() {
       '\nTerjadwal untuk nanti (tidak ikut terkirim): ' + (counts.TERJADWAL || 0) +
       '\nTerkirim 24 jam terakhir: ' + recent + (CONFIG.DAILY_CAP > 0 ? ' (batas ' + CONFIG.DAILY_CAP + ')' : '') +
       '\nSisa kuota Apps Script hari ini: ' + quota +
+      bccTeks_() +
       blokirTeks_(blok) +
       '\n\nLanjut kirim ke konsumen?',
       ui.ButtonSet.YES_NO);
@@ -162,7 +174,8 @@ function sendNow() {
       WAKTU: 'Batas waktu 1 eksekusi tercapai. Skrip akan melanjutkan otomatis sekitar 1 menit lagi.'
     }[r.stopReason];
     ui.alert('Selesai.\nTerkirim: ' + r.sent + '\nGagal: ' + r.failed +
-             '\nDilewati (invalid/duplikat/opt-out/jadwal salah): ' + r.skipped + '\n\n' + info);
+             '\nDilewati (invalid/duplikat/opt-out/jadwal salah): ' + r.skipped +
+             (r.bcc ? '\nSalinan BCC ke ' + bccAddress_() + ': ' + r.bcc : '') + '\n\n' + info);
   } catch (e) {
     ui.alert('Gagal: ' + e.message);
   }
@@ -190,6 +203,7 @@ function showSummary() {
     '\nDaftar bounce (tab ' + CONFIG.BOUNCE_SHEET + '): ' + readBounceList_().rows.length + ' alamat' +
     '\nDaftar opt-out (tab ' + CONFIG.OPTOUT_SHEET + '): ' + readOptOutList_().count + ' alamat' +
     riwayatTeks_() +
+    bccTeks_() +
     '\nSisa kuota Apps Script hari ini: ' + MailApp.getRemainingDailyQuota());
 }
 
@@ -253,7 +267,7 @@ function sendBatch_(opts) {
     const now = new Date();
     if (!auto) clearTriggers_('continueRun');
 
-    const res = { sent: 0, failed: 0, skipped: 0, stopReason: 'SELESAI' };
+    const res = { sent: 0, failed: 0, skipped: 0, bcc: 0, stopReason: 'SELESAI' };
 
     // Pra-cek cepat: kalau tidak ada yang perlu diproses, selesai tanpa kerja berat
     let t = readTable_();
@@ -318,11 +332,15 @@ function sendBatch_(opts) {
       return tplCache[key];
     };
 
-    const quotaLeft = MailApp.getRemainingDailyQuota() - CONFIG.QUOTA_RESERVE;
-    const capLeft = (CONFIG.DAILY_CAP > 0)
+    // Dua batas terpisah: kuota Apps Script dihitung per PENERIMA (salinan BCC ikut memakai 1),
+    // batas Gmail (DAILY_CAP) dihitung per EMAIL (BCC tidak menambah hitungan).
+    let quotaLeft = MailApp.getRemainingDailyQuota() - CONFIG.QUOTA_RESERVE;
+    let capLeft = (CONFIG.DAILY_CAP > 0)
       ? Math.max(0, CONFIG.DAILY_CAP - sentLast24h_(t, now, riw)) : Infinity;
-    const capIsTighter = capLeft <= quotaLeft;
-    let remaining = Math.min(quotaLeft, capLeft);
+
+    // Salinan BCC untuk pantauan (lihat CONFIG.BCC_SETIAP)
+    const bccAddr = CONFIG.BCC_SETIAP > 0 ? bccAddress_() : '';
+    const bccTpl = {};                                   // template yang sudah dapat salinan di putaran ini
 
     const bounceMap = {};
     readBounceList_().rows.forEach(function (e) { bounceMap[e.email] = e; });
@@ -368,16 +386,25 @@ function sendBatch_(opts) {
 
         if (opts.maxSend && (res.sent + res.failed) >= opts.maxSend) { res.stopReason = 'BATCH'; break; }
 
-        if (remaining <= 0) { res.stopReason = capIsTighter ? 'BATAS_HARIAN' : 'KUOTA'; break; }
+        if (capLeft <= 0) { res.stopReason = 'BATAS_HARIAN'; break; }
+        if (quotaLeft <= 0) { res.stopReason = 'KUOTA'; break; }
         if (Date.now() - t0 > CONFIG.MAX_RUNTIME_MS) { res.stopReason = 'WAKTU'; break; }
 
+        // BCC: email pertama tiap template di putaran ini, lalu 1 dari tiap BCC_SETIAP kiriman.
+        // Dilewati bila kuota Apps Script tidak cukup untuk 2 penerima.
+        const tplName = loaded.tpl.name;
+        const bcc = (bccAddr && quotaLeft >= 2 &&
+                     (!bccTpl[tplName] || riw.times.length % CONFIG.BCC_SETIAP === 0)) ? bccAddr : '';
+
         try {
-          deliver_(email, loaded.tpl, rowVars_(t.headers, row), '');
+          deliver_(email, loaded.tpl, rowVars_(t.headers, row), '', bcc);
           const sentMs = Date.now();
           mark(i, 'SENT', keteranganKirim_(hist));
           catatRiwayat_(riw, email, sentMs);
-          logBuf.push([email, new Date(sentMs), loaded.tpl.name, '']);
-          remaining--;
+          logBuf.push([email, new Date(sentMs), tplName, bcc ? 'BCC' : '']);
+          capLeft--;
+          quotaLeft -= bcc ? 2 : 1;
+          if (bcc) { bccTpl[tplName] = true; res.bcc++; }
           res.sent++;
         } catch (e) {
           const msg = String(e && e.message ? e.message : e);
@@ -546,12 +573,13 @@ function escapeHtml_(s) {
     .replace(/\r?\n/g, '<br>');
 }
 
-function deliver_(to, tpl, vars, subjectPrefix) {
+function deliver_(to, tpl, vars, subjectPrefix, bcc) {
   const opts = {
     htmlBody: fill_(tpl.html, vars, true),
     name: CONFIG.SENDER_NAME,
     attachments: tpl.attachments
   };
+  if (bcc) opts.bcc = bcc;
   if (CONFIG.REPLY_TO) opts.replyTo = CONFIG.REPLY_TO;
   if (CONFIG.FROM_ALIAS) opts.from = CONFIG.FROM_ALIAS;
   GmailApp.sendEmail(to, subjectPrefix + fill_(tpl.subject, vars, false), fill_(tpl.text, vars, false), opts);
@@ -1526,6 +1554,24 @@ function riwayatTeks_() {
          Object.keys(riw.byEmail).length + ' alamat' +
          '\nJeda minimal kirim ulang ke alamat yang sama: ' +
          (CONFIG.MIN_RESEND_DAYS > 0 ? CONFIG.MIN_RESEND_DAYS + ' hari' : 'tidak ada');
+}
+
+/* ===================== SALINAN BCC ===================== */
+
+// Alamat tujuan salinan BCC: CONFIG.BCC_EMAIL, atau alamat pengirim + "+blast"
+function bccAddress_() {
+  if (CONFIG.BCC_EMAIL) return String(CONFIG.BCC_EMAIL).trim();
+  const me = String(Session.getEffectiveUser().getEmail());
+  const at = me.indexOf('@');
+  return at > 0 ? me.slice(0, at) + '+blast' + me.slice(at) : me;
+}
+
+function bccTeks_() {
+  if (!(CONFIG.BCC_SETIAP > 0)) return '\nSalinan BCC: mati';
+  return '\nSalinan BCC ke ' + bccAddress_() + ': ' +
+    (CONFIG.BCC_SETIAP === 1
+      ? 'SEMUA email (tiap email memakai 2 kuota Apps Script)'
+      : '1 dari tiap ' + CONFIG.BCC_SETIAP + ' email + email pertama tiap template per putaran');
 }
 
 /* ===================== CEK DATA BARU KE DAFTAR BOUNCE & OPT-OUT ===================== */

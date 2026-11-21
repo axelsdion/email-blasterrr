@@ -17,6 +17,8 @@ Baca dulu `docs/Serah_Terima_Proyek_Email_Blasting.md` Bagian 1–3, 5, dan 9. K
 - Hitungan 24 jam = nilai terbesar dari sheet `Data` dan tab `RiwayatKirim` (pengguna sering menghapus baris di `Data`).
 - Data konsumen di-recycle: email yang sama boleh dikirim berkali-kali. `DUPLIKAT` hanya bila alamat yang sama
   dikirimi kurang dari `MIN_RESEND_DAYS` hari lalu. Status tetap `SENT`; urutan kiriman ada di Keterangan ("Kiriman ke-N").
+- Kuota Apps Script dihitung per PENERIMA: salinan BCC memakai 1 kuota tambahan, tapi tidak menambah hitungan `DAILY_CAP`.
+  `sendBatch_` melacak `quotaLeft` dan `capLeft` terpisah.
 - `DaftarBounce`, `DaftarOptOut`, `RiwayatKirim` adalah sumber kebenaran lintas tempelan data; jangan menyimpan status penting hanya di sheet `Data`.
 
 ## Aturan template HTML (Bagian 6.2 dokumen)
