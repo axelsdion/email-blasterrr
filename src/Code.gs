@@ -17,7 +17,9 @@
  *                             dan jamnya sudah tiba (baris tanpa Jadwal tidak disentuh).
  *
  * Tab yang dibuat otomatis (jangan dihapus; baris di sheet Data boleh dihapus):
- *  - DaftarBounce : alamat bermasalah. PERMANEN tidak pernah dikirimi lagi, SEMENTARA ditahan 14 hari.
+ *  - DaftarBounce : alamat bermasalah. Semua yang ada di sini tidak pernah dikirimi lagi, termasuk
+ *                   SEMENTARA (inbox penuh), kecuali BOUNCE_TEMP_DAYS diisi angka > 0.
+ *                   Bounce karena batas kirim akun kita sendiri (GAGAL_LIMIT) TIDAK masuk daftar ini.
  *  - DaftarOptOut : alamat yang minta berhenti (balasan STOP atau kolom OptOut = YA). Tidak dikirimi lagi.
  *  - RiwayatKirim : semua kiriman. Dipakai untuk "Kiriman ke-N", jeda kirim ulang (MIN_RESEND_DAYS),
  *                   dan hitungan 24 jam.
@@ -54,7 +56,9 @@ const CONFIG = {
   DAILY_CAP: 1400,
   BOUNCE_DAYS: 14,                // berapa hari ke belakang laporan bounce Gmail dibaca (pemindaian penuh)
   BOUNCE_SHEET: 'DaftarBounce',   // tab daftar alamat bermasalah (dibuat otomatis)
-  BOUNCE_TEMP_DAYS: 14,           // alamat bounce SEMENTARA (inbox penuh dll) dilewati selama ini
+  // Alamat bounce SEMENTARA (inbox penuh dll) ditahan berapa hari. 0 = SELAMANYA (semua bounce = blacklist).
+  // Isi angka (mis. 14) bila suatu saat ingin alamat inbox-penuh dicoba lagi setelah sekian hari.
+  BOUNCE_TEMP_DAYS: 0,
 
   // ---- KIRIM ULANG (RECYCLE DATA) ----
   HISTORY_SHEET: 'RiwayatKirim',  // tab catatan semua kiriman (dibuat otomatis, JANGAN dihapus)
@@ -765,9 +769,11 @@ function writeBounceList_(list) {
   if (data.length) sh.getRange(2, 1, data.length, 5).setValues(data);
 }
 
-// PERMANEN selalu dilewati. SEMENTARA dilewati selama BOUNCE_TEMP_DAYS hari sejak bounce.
+// PERMANEN selalu dilewati. SEMENTARA juga selalu dilewati bila BOUNCE_TEMP_DAYS = 0 (bawaan),
+// selain itu dilewati selama BOUNCE_TEMP_DAYS hari sejak bounce.
 function bounceActive_(e, nowMs) {
   if (e.jenis !== 'SEMENTARA') return true;
+  if (!(CONFIG.BOUNCE_TEMP_DAYS > 0)) return true;
   if (!e.when) return true;
   return (nowMs - e.when) < CONFIG.BOUNCE_TEMP_DAYS * 24 * 60 * 60 * 1000;
 }
@@ -988,7 +994,9 @@ function tandaiBounce() {
       '- Inbox penerima penuh dan masalah sementara: Status BOUNCE_SEMENTARA, alasannya di Keterangan.\n' +
       '- Ditolak karena batas kirim akun: Status GAGAL_LIMIT.\n' +
       '- Semua alamat bermasalah dicatat di tab ' + CONFIG.BOUNCE_SHEET + ' dan TIDAK dikirimi lagi ' +
-      '(permanen selamanya, sementara ' + CONFIG.BOUNCE_TEMP_DAYS + ' hari).\n\n' +
+      (CONFIG.BOUNCE_TEMP_DAYS > 0
+        ? '(permanen selamanya, sementara ' + CONFIG.BOUNCE_TEMP_DAYS + ' hari).\n\n'
+        : '(semua jenis bounce, selamanya).\n\n') +
       'Untuk jumlah besar, pemindaian berlanjut otomatis tiap 1 menit sampai selesai.\n\nLanjutkan?',
       ui.ButtonSet.YES_NO);
     if (ans !== ui.Button.YES) return;

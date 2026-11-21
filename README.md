@@ -77,3 +77,6 @@ Hati-hati: `clasp push` menimpa semua file di proyek Apps Script dengan isi `src
   berlaku walaupun barisnya dihapus dan data ditempel ulang.
 - **Hitungan 24 jam tidak turun saat baris `Data` dihapus**: diambil yang terbesar dari sheet `Data` dan `RiwayatKirim`.
   Kiriman yang ditolak batas Gmail diberi catatan `GAGAL_LIMIT` di `RiwayatKirim` dan tidak dihitung.
+- **Semua bounce = blacklist.** `BOUNCE_TEMP_DAYS` kini bawaan `0`: alamat di `DaftarBounce` tidak pernah dikirimi
+  lagi, termasuk jenis SEMENTARA (inbox penuh, pengiriman tertunda). Bounce karena batas kirim akun kita sendiri
+  (`GAGAL_LIMIT`) tetap tidak masuk daftar. Isi angka > 0 untuk kembali ke aturan lama (SEMENTARA dicoba lagi).
