@@ -15,6 +15,13 @@
  *                             kosong atau sudah tiba.
  *  - Penjadwal otomatis     : tiap beberapa menit, kirim HANYA baris yang punya Jadwal
  *                             dan jamnya sudah tiba (baris tanpa Jadwal tidak disentuh).
+ *
+ * Tab yang dibuat otomatis (jangan dihapus; baris di sheet Data boleh dihapus):
+ *  - DaftarBounce : alamat bermasalah. PERMANEN tidak pernah dikirimi lagi, SEMENTARA ditahan 14 hari.
+ *  - DaftarOptOut : alamat yang minta berhenti (balasan STOP atau kolom OptOut = YA). Tidak dikirimi lagi.
+ *  - RiwayatKirim : semua kiriman. Dipakai untuk "Kiriman ke-N", jeda kirim ulang (MIN_RESEND_DAYS),
+ *                   dan hitungan 24 jam.
+ *  Data yang ditempel ulang (recycle) otomatis dicocokkan ke ketiga tab ini sebelum dikirim.
  */
 
 const CONFIG = {
@@ -49,6 +56,11 @@ const CONFIG = {
   BOUNCE_SHEET: 'DaftarBounce',   // tab daftar alamat bermasalah (dibuat otomatis)
   BOUNCE_TEMP_DAYS: 14,           // alamat bounce SEMENTARA (inbox penuh dll) dilewati selama ini
 
+  // ---- KIRIM ULANG (RECYCLE DATA) ----
+  HISTORY_SHEET: 'RiwayatKirim',  // tab catatan semua kiriman (dibuat otomatis, JANGAN dihapus)
+  OPTOUT_SHEET: 'DaftarOptOut',   // tab alamat yang minta berhenti (dibuat otomatis)
+  MIN_RESEND_DAYS: 7,             // email yang sama baru boleh dikirimi lagi setelah sekian hari (0 = tanpa jeda)
+
   // ---- KIRIM BERTAHAP (menu "Kirim bertahap") ----
   // Ini hanya nilai bawaan pertama kali: jumlah & jeda ditanyakan setiap menu 2b diklik,
   // dan pilihan terakhir diingat sebagai nilai bawaan berikutnya.
@@ -81,6 +93,7 @@ function onOpen() {
     .addItem('Hentikan kirim bertahap', 'hentikanBertahap')
     .addSeparator()
     .addItem('Lihat ringkasan & sisa kuota', 'showSummary')
+    .addItem('Cek data baru (DaftarBounce & OptOut)', 'cekDaftarBlokir')
     .addItem('Tandai OptOut dari balasan STOP', 'tandaiOptOut')
     .addSeparator()
     .addItem('Tandai bounce dari laporan Gmail', 'tandaiBounce')
@@ -122,6 +135,7 @@ function sendTest() {
 function sendNow() {
   const ui = SpreadsheetApp.getUi();
   try {
+    const blok = cekDaftarBlokir_();                     // tahan dulu alamat bounce/opt-out
     const counts = countStatus_();
     const quota = MailApp.getRemainingDailyQuota();
     const recent = sentLast24h_(readTable_(), new Date());
@@ -131,6 +145,7 @@ function sendNow() {
       '\nTerjadwal untuk nanti (tidak ikut terkirim): ' + (counts.TERJADWAL || 0) +
       '\nTerkirim 24 jam terakhir: ' + recent + (CONFIG.DAILY_CAP > 0 ? ' (batas ' + CONFIG.DAILY_CAP + ')' : '') +
       '\nSisa kuota Apps Script hari ini: ' + quota +
+      blokirTeks_(blok) +
       '\n\nLanjut kirim ke konsumen?',
       ui.ButtonSet.YES_NO);
     if (ans !== ui.Button.YES) return;
@@ -169,6 +184,8 @@ function showSummary() {
     '\n\n(PENDING = siap kirim sekarang, TERJADWAL = menunggu jamnya)' +
     kapasitasTeks_() +
     '\nDaftar bounce (tab ' + CONFIG.BOUNCE_SHEET + '): ' + readBounceList_().rows.length + ' alamat' +
+    '\nDaftar opt-out (tab ' + CONFIG.OPTOUT_SHEET + '): ' + readOptOutList_().count + ' alamat' +
+    riwayatTeks_() +
     '\nSisa kuota Apps Script hari ini: ' + MailApp.getRemainingDailyQuota());
 }
 
@@ -253,16 +270,18 @@ function sendBatch_(opts) {
     const optI = (CONFIG.COL_OPTOUT in t.col) ? t.col[CONFIG.COL_OPTOUT] : -1;
     const tz = Session.getScriptTimeZone();
 
-    const status = [], sentAt = [], note = [], seen = {};
+    const status = [], sentAt = [], note = [];
     for (let i = 0; i < n; i++) {
       const row = t.values[i + 1];
       status.push(row[statusI]);
       sentAt.push(row[sentI]);
       note.push(row[noteI]);
-      if (String(row[statusI]).trim().toUpperCase() === 'SENT') {
-        seen[String(row[emailI]).trim().toLowerCase()] = true;
-      }
     }
+
+    // Riwayat semua kiriman (tab RiwayatKirim) dan daftar opt-out permanen (tab DaftarOptOut)
+    const riw = readRiwayat_();
+    const optList = readOptOutList_();
+    const newOpt = [], logBuf = [];
 
     const mark = function (i, s, msg) {
       status[i] = s;
@@ -275,6 +294,7 @@ function sendBatch_(opts) {
         t.sh.getRange(2, c + 1, n, 1).setValues(arr.map(function (v) { return [v]; }));
       };
       put(statusI, status); put(sentI, sentAt); put(noteI, note);
+      if (logBuf.length) { appendRiwayat_(logBuf); logBuf.length = 0; }
       SpreadsheetApp.flush();
     };
 
@@ -296,7 +316,7 @@ function sendBatch_(opts) {
 
     const quotaLeft = MailApp.getRemainingDailyQuota() - CONFIG.QUOTA_RESERVE;
     const capLeft = (CONFIG.DAILY_CAP > 0)
-      ? Math.max(0, CONFIG.DAILY_CAP - sentLast24h_(t, now)) : Infinity;
+      ? Math.max(0, CONFIG.DAILY_CAP - sentLast24h_(t, now, riw)) : Infinity;
     const capIsTighter = capLeft <= quotaLeft;
     let remaining = Math.min(quotaLeft, capLeft);
 
@@ -316,18 +336,24 @@ function sendBatch_(opts) {
         const row = t.values[i + 1];
         const email = String(row[emailI]).trim().toLowerCase();
 
-        if (optI >= 0 && /^(ya|yes|y|true|1)$/i.test(String(row[optI]).trim())) {
-          mark(i, 'OPTOUT', 'Penerima berhenti berlangganan'); res.skipped++; continue;
+        if (optI >= 0 && OPTOUT_RE.test(String(row[optI]).trim())) {
+          mark(i, 'OPTOUT', 'Penerima berhenti berlangganan'); newOpt.push(email); res.skipped++; continue;
+        }
+        if (optList.set[email]) {
+          mark(i, 'OPTOUT', 'Ada di ' + CONFIG.OPTOUT_SHEET); res.skipped++; continue;
         }
         if (!EMAIL_RE.test(email)) {
           mark(i, 'INVALID', 'Format email tidak valid'); res.skipped++; continue;
         }
-        if (seen[email]) {
-          mark(i, 'DUPLIKAT', 'Email sudah terkirim/ada di baris lain'); res.skipped++; continue;
-        }
         const be = bounceMap[email];
         if (be && bounceActive_(be, nowMs)) {
           mark(i, be.jenis === 'SEMENTARA' ? 'BOUNCE_SEMENTARA' : 'BOUNCE', 'Daftar bounce: ' + be.alasan);
+          res.skipped++; continue;
+        }
+        const hist = riw.byEmail[email];
+        if (hist && CONFIG.MIN_RESEND_DAYS > 0 && nowMs - hist.last < CONFIG.MIN_RESEND_DAYS * DAY_MS) {
+          mark(i, 'DUPLIKAT', 'Sudah dikirimi ' + fmtTgl_(hist.last) +
+               '; boleh dikirim lagi setelah ' + fmtTgl_(hist.last + CONFIG.MIN_RESEND_DAYS * DAY_MS));
           res.skipped++; continue;
         }
 
@@ -343,8 +369,10 @@ function sendBatch_(opts) {
 
         try {
           deliver_(email, loaded.tpl, rowVars_(t.headers, row), '');
-          mark(i, 'SENT', '');
-          seen[email] = true;
+          const sentMs = Date.now();
+          mark(i, 'SENT', keteranganKirim_(hist));
+          catatRiwayat_(riw, email, sentMs);
+          logBuf.push([email, new Date(sentMs), loaded.tpl.name, '']);
           remaining--;
           res.sent++;
         } catch (e) {
@@ -362,6 +390,7 @@ function sendBatch_(opts) {
       }
     } finally {
       flush();
+      try { addOptOut_(optList, newOpt, 'Kolom OptOut'); } catch (e) { Logger.log('Simpan opt-out gagal: ' + e); }
     }
 
     // Pengiriman manual yang terhenti karena waktu: lanjut otomatis 1 menit lagi.
@@ -588,22 +617,25 @@ const STATUS_TERHITUNG = { SENT: 1, BOUNCE: 1, BOUNCE_SEMENTARA: 1 };
 
 // Daftar waktu kirim (ms) email yang masuk hitungan 24 jam terakhir. Tiap email keluar dari
 // hitungan tepat 24 jam setelah waktu kirimnya sendiri (jendela bergulir, bukan reset jam tertentu).
-function sentWindow_(t, now) {
+// Dihitung dari sheet Data DAN tab RiwayatKirim, lalu diambil yang lebih besar, supaya hitungan
+// tidak turun ketika baris di sheet Data dihapus (misalnya baris BOUNCE yang dibersihkan).
+function sentWindow_(t, now, riw) {
   const tz = SpreadsheetApp.getActive().getSpreadsheetTimeZone();
   const statusI = t.col[CONFIG.COL_STATUS];
   const sentI = t.col[CONFIG.COL_SENT_AT];
-  const since = now.getTime() - 24 * 60 * 60 * 1000;
+  const since = now.getTime() - DAY_MS;
   const times = [];
   for (let r = 1; r < t.values.length; r++) {
     if (!STATUS_TERHITUNG[String(t.values[r][statusI]).trim().toUpperCase()]) continue;
     const w = parseJadwal_(t.raw[r][sentI], t.values[r][sentI], tz);
     if (w.when && w.when.getTime() >= since) times.push(w.when.getTime());
   }
-  return times;
+  const logTimes = (riw || readRiwayat_()).times.filter(function (x) { return x >= since; });
+  return logTimes.length > times.length ? logTimes : times;
 }
 
-function sentLast24h_(t, now) {
-  return sentWindow_(t, now).length;
+function sentLast24h_(t, now, riw) {
+  return sentWindow_(t, now, riw).length;
 }
 
 // Ringkasan ruang kirim: berapa yang akan "keluar" dari hitungan dalam 1, 3, dan 6 jam ke depan
@@ -804,6 +836,7 @@ function scanBounces_(opts) {
     };
     const TOLERANCE_MS = 10 * 60 * 1000;
     let changedRows = false, changedList = false;
+    const limitHits = [];                                // kiriman yang ditolak batas Gmail (untuk RiwayatKirim)
 
     const query = opts.query || ('from:mailer-daemon newer_than:' + CONFIG.BOUNCE_DAYS + 'd');
     const PAGE = 50;
@@ -844,6 +877,8 @@ function scanBounces_(opts) {
             if (r === 'naik') res.listNaik++;
             if (r !== 'ada') changedList = true;
           });
+        } else {
+          recips.forEach(function (addr) { limitHits.push({ email: addr, time: origTime }); });
         }
 
         // Tandai baris yang masih SENT dan cocok dengan waktu kirim email aslinya
@@ -899,6 +934,8 @@ function scanBounces_(opts) {
       put(statusI, status); put(sentI, sentAt); put(noteI, note);
     }
     if (changedList) writeBounceList_(list);
+    try { res.riwayatLimit = tandaiRiwayatLimit_(limitHits, TOLERANCE_MS); }
+    catch (e) { Logger.log('Tandai riwayat limit gagal: ' + e); }
     SpreadsheetApp.flush();
 
     if (opts.useCursor) {
@@ -1106,9 +1143,10 @@ function kirimBertahap() {
       ui.alert('Kirim bertahap sedang berjalan.\n\n' + bertahapTeks_());
       return;
     }
+    const blok = cekDaftarBlokir_();                     // tahan dulu alamat bounce/opt-out
     const counts = countStatus_();
     const ready = counts.PENDING || 0;
-    if (ready === 0) { ui.alert('Tidak ada baris yang siap dikirim.'); return; }
+    if (ready === 0) { ui.alert('Tidak ada baris yang siap dikirim.' + blokirTeks_(blok)); return; }
 
     const recent = sentLast24h_(readTable_(), new Date());
 
@@ -1143,6 +1181,7 @@ function kirimBertahap() {
       '\nPer putaran: ' + size + ' email, jeda ' + gap + ' menit' +
       '\nPerkiraan: ' + batches + ' putaran, sekitar ' + minutes + ' menit (' + (minutes / 60).toFixed(1) + ' jam)' +
       '\nTerkirim 24 jam terakhir: ' + recent + (CONFIG.DAILY_CAP > 0 ? ' (batas ' + CONFIG.DAILY_CAP + ')' : '') +
+      blokirTeks_(blok) +
       catatan +
       '\n\nPutaran pertama langsung berjalan sekarang. Setelah itu proses berjalan sendiri di server Google, ' +
       'jadi Sheet boleh ditutup.\n\nMulai?',
@@ -1262,48 +1301,314 @@ function limitBounceSince_(since) {
 
 /* ===================== OPT-OUT OTOMATIS DARI BALASAN STOP ===================== */
 
+// Membaca balasan STOP di inbox. Alamat yang minta berhenti disimpan PERMANEN di tab DaftarOptOut
+// (tetap berlaku walaupun barisnya dihapus dari sheet Data atau datanya di-recycle), dan kolom
+// OptOut di semua baris alamat itu diisi YA. Mengembalikan jumlah alamat baru di DaftarOptOut.
 function syncOptOut_() {
-  const sh = getSheet_();
-  const values = sh.getDataRange().getDisplayValues();
-  const headers = values[0].map(function (h) { return String(h).trim(); });
-  const emailI = headers.indexOf(CONFIG.COL_EMAIL);
-  const optI = headers.indexOf(CONFIG.COL_OPTOUT);
-  if (emailI < 0 || optI < 0) return 0;
+  const t = readTable_();
+  const emailI = t.col[CONFIG.COL_EMAIL];
+  const optI = (CONFIG.COL_OPTOUT in t.col) ? t.col[CONFIG.COL_OPTOUT] : -1;
 
-  const rowByEmail = {};
-  for (let r = 1; r < values.length; r++) {
-    rowByEmail[String(values[r][emailI]).trim().toLowerCase()] = r + 1;
+  // hanya alamat yang memang pernah/akan kita kirimi (sheet Data atau RiwayatKirim)
+  const rowsByEmail = {};
+  for (let r = 1; r < t.values.length; r++) {
+    const em = String(t.values[r][emailI]).trim().toLowerCase();
+    if (em) (rowsByEmail[em] = rowsByEmail[em] || []).push(r + 1);
   }
+  const riw = readRiwayat_();
 
-  let count = 0;
+  const found = [];
   const threads = GmailApp.search('in:inbox newer_than:30d -from:me', 0, 100);
   threads.forEach(function (th) {
     th.getMessages().forEach(function (msg) {
       const m = msg.getFrom().match(/<([^>]+)>/);
       const from = (m ? m[1] : msg.getFrom()).trim().toLowerCase();
-      const row = rowByEmail[from];
-      if (!row) return;
+      if (!rowsByEmail[from] && !riw.byEmail[from]) return;
 
       // hanya baca bagian atas balasan (2 paragraf pertama), abaikan kutipan email asli
       const top = msg.getPlainBody().split(/\r?\n/)
         .filter(function (l) { return l.trim().charAt(0) !== '>'; }).join('\n')
         .trim().split(/\r?\n\s*\r?\n/).slice(0, 2).join(' ').substring(0, 200);
 
-      if (/\b(stop|berhenti|unsubscribe)\b/i.test(top)) {
-        const cell = sh.getRange(row, optI + 1);
-        if (String(cell.getValue()).trim().toUpperCase() !== 'YA') {
-          cell.setValue('YA');
-          count++;
-        }
-      }
+      if (/\b(stop|berhenti|unsubscribe)\b/i.test(top)) found.push(from);
     });
   });
-  return count;
+
+  const added = addOptOut_(readOptOutList_(), found, 'Balasan STOP');
+  if (optI >= 0) {
+    found.forEach(function (em) {
+      (rowsByEmail[em] || []).forEach(function (row) {
+        if (!OPTOUT_RE.test(String(t.values[row - 1][optI]).trim())) {
+          t.sh.getRange(row, optI + 1).setValue('YA');
+          t.values[row - 1][optI] = 'YA';
+        }
+      });
+    });
+  }
+  return added;
 }
 
 function tandaiOptOut() {
   const n = syncOptOut_();
-  SpreadsheetApp.getUi().alert('Selesai. ' + n + ' penerima baru ditandai OptOut = YA.');
+  SpreadsheetApp.getUi().alert('Selesai. ' + n + ' alamat baru masuk tab ' + CONFIG.OPTOUT_SHEET +
+    ' dan tidak akan dikirimi lagi.');
+}
+
+/* ===================== DAFTAR OPT-OUT PERMANEN ===================== */
+// Tab DaftarOptOut: Email | Tanggal | Sumber. Alamat di sini tidak pernah dikirimi lagi.
+// Untuk mengizinkan lagi: hapus barisnya dari tab ini DAN kosongkan kolom OptOut di sheet Data.
+
+const OPTOUT_RE = /^(ya|yes|y|true|1)$/i;
+
+function getOptOutSheet_(create) {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(CONFIG.OPTOUT_SHEET);
+  if (!sh && create) {
+    sh = ss.insertSheet(CONFIG.OPTOUT_SHEET);
+    sh.getRange(1, 1, 1, 3).setValues([['Email', 'Tanggal', 'Sumber']]);
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+function readOptOutList_() {
+  const out = { set: {}, count: 0 };
+  const sh = getOptOutSheet_(false);
+  if (!sh) return out;
+  const last = sh.getLastRow();
+  if (last < 2) return out;
+  sh.getRange(2, 1, last - 1, 1).getDisplayValues().forEach(function (r) {
+    const em = String(r[0]).trim().toLowerCase();
+    if (em && !out.set[em]) { out.set[em] = true; out.count++; }
+  });
+  return out;
+}
+
+// Tambah alamat ke DaftarOptOut (yang sudah ada dilewati). Mengembalikan jumlah alamat baru.
+function addOptOut_(list, emails, sumber) {
+  const now = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+  const rows = [];
+  (emails || []).forEach(function (em) {
+    em = String(em).trim().toLowerCase();
+    if (!em || list.set[em]) return;
+    list.set[em] = true;
+    list.count++;
+    rows.push([em, now, sumber]);
+  });
+  if (rows.length) {
+    const sh = getOptOutSheet_(true);
+    sh.getRange(sh.getLastRow() + 1, 1, rows.length, 3).setValues(rows);
+  }
+  return rows.length;
+}
+
+/* ===================== RIWAYAT KIRIM (KIRIM ULANG / RECYCLE) ===================== */
+// Tab RiwayatKirim: satu baris per email yang berhasil dikirim (Email | Waktu Kirim | Template | Catatan).
+// Dipakai untuk: "Kiriman ke-berapa", jeda minimal kirim ulang (MIN_RESEND_DAYS), dan hitungan 24 jam
+// yang tetap benar walaupun baris di sheet Data dihapus. Catatan berisi GAGAL_LIMIT = kiriman itu
+// ditolak batas Gmail, jadi tidak dihitung. Tab ini dibuat otomatis; jangan dihapus atau diurutkan ulang.
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function fmtTgl_(ms) {
+  return Utilities.formatDate(new Date(ms), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
+}
+
+function getRiwayatSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(CONFIG.HISTORY_SHEET);
+  if (sh) return sh;
+  sh = ss.insertSheet(CONFIG.HISTORY_SHEET);
+  sh.getRange(1, 1, 1, 4).setValues([['Email', 'Waktu Kirim', 'Template', 'Catatan']]);
+  sh.setFrozenRows(1);
+  sh.getRange('B:B').setNumberFormat('yyyy-mm-dd hh:mm:ss');
+
+  // Isi awal: kiriman lama yang masih tercatat di sheet Data
+  try {
+    const t = readTable_();
+    const tz = SpreadsheetApp.getActive().getSpreadsheetTimeZone();
+    const emailI = t.col[CONFIG.COL_EMAIL], statusI = t.col[CONFIG.COL_STATUS], sentI = t.col[CONFIG.COL_SENT_AT];
+    const rows = [];
+    for (let r = 1; r < t.values.length; r++) {
+      if (!STATUS_TERHITUNG[String(t.values[r][statusI]).trim().toUpperCase()]) continue;
+      const em = String(t.values[r][emailI]).trim().toLowerCase();
+      const w = parseJadwal_(t.raw[r][sentI], t.values[r][sentI], tz).when;
+      if (em && w) rows.push([em, w, templateNameForRow_(t, t.values[r]), 'Dari sheet Data']);
+    }
+    if (rows.length) sh.getRange(2, 1, rows.length, 4).setValues(rows);
+  } catch (e) {
+    Logger.log('Isi awal RiwayatKirim dilewati: ' + e);
+  }
+  return sh;
+}
+
+// { byEmail: { email: {count, first, last} }, times: [ms, ...] }
+function readRiwayat_() {
+  const sh = getRiwayatSheet_();
+  const out = { byEmail: {}, times: [] };
+  const last = sh.getLastRow();
+  if (last < 2) return out;
+  const vals = sh.getRange(2, 1, last - 1, 4).getValues();
+  const tz = SpreadsheetApp.getActive().getSpreadsheetTimeZone();
+  for (let i = 0; i < vals.length; i++) {
+    const em = String(vals[i][0]).trim().toLowerCase();
+    if (!em || /GAGAL_LIMIT/i.test(String(vals[i][3]))) continue;
+    const w = parseJadwal_(vals[i][1], String(vals[i][1]), tz).when;
+    if (!w) continue;
+    catatRiwayat_(out, em, w.getTime());
+  }
+  return out;
+}
+
+function catatRiwayat_(riw, email, ms) {
+  const h = riw.byEmail[email];
+  if (!h) riw.byEmail[email] = { count: 1, first: ms, last: ms };
+  else {
+    h.count++;
+    if (ms < h.first) h.first = ms;
+    if (ms > h.last) h.last = ms;
+  }
+  riw.times.push(ms);
+}
+
+function appendRiwayat_(rows) {
+  if (!rows.length) return;
+  const sh = getRiwayatSheet_();
+  sh.getRange(sh.getLastRow() + 1, 1, rows.length, 4).setValues(rows);
+}
+
+// Teks Keterangan untuk baris SENT. prev = riwayat alamat ini SEBELUM kiriman sekarang.
+function keteranganKirim_(prev) {
+  if (!prev) return 'Kiriman ke-1';
+  const ke = prev.count + 1;
+  return 'Kiriman ke-' + ke + ' (pertama ' + fmtTgl_(prev.first) +
+         (ke > 2 ? ', sebelumnya ' + fmtTgl_(prev.last) : '') + ')';
+}
+
+// Kiriman yang ternyata ditolak batas Gmail diberi Catatan GAGAL_LIMIT di RiwayatKirim,
+// supaya tidak dihitung sebagai kiriman dan bisa dikirim ulang tanpa tertahan DUPLIKAT.
+function tandaiRiwayatLimit_(hits, toleranceMs) {
+  if (!hits.length) return 0;
+  const want = {};
+  hits.forEach(function (h) { (want[h.email] = want[h.email] || []).push(h.time); });
+  const sh = getRiwayatSheet_();
+  const last = sh.getLastRow();
+  if (last < 2) return 0;
+  const vals = sh.getRange(2, 1, last - 1, 4).getValues();
+  const tz = SpreadsheetApp.getActive().getSpreadsheetTimeZone();
+  const notes = vals.map(function (v) { return [v[3]]; });
+  let count = 0;
+  for (let i = 0; i < vals.length; i++) {
+    const times = want[String(vals[i][0]).trim().toLowerCase()];
+    if (!times || /GAGAL_LIMIT/i.test(String(vals[i][3]))) continue;
+    const w = parseJadwal_(vals[i][1], String(vals[i][1]), tz).when;
+    if (!w) continue;
+    if (times.some(function (x) { return Math.abs(x - w.getTime()) <= toleranceMs; })) {
+      notes[i][0] = 'GAGAL_LIMIT (ditolak batas Gmail)';
+      count++;
+    }
+  }
+  if (count) sh.getRange(2, 4, notes.length, 1).setValues(notes);
+  return count;
+}
+
+function riwayatTeks_() {
+  const riw = readRiwayat_();
+  return '\nRiwayat kirim (tab ' + CONFIG.HISTORY_SHEET + '): ' + riw.times.length + ' kiriman ke ' +
+         Object.keys(riw.byEmail).length + ' alamat' +
+         '\nJeda minimal kirim ulang ke alamat yang sama: ' +
+         (CONFIG.MIN_RESEND_DAYS > 0 ? CONFIG.MIN_RESEND_DAYS + ' hari' : 'tidak ada');
+}
+
+/* ===================== CEK DATA BARU KE DAFTAR BOUNCE & OPT-OUT ===================== */
+// Menandai baris yang BELUM dikirim bila alamatnya ada di DaftarBounce (masih aktif), DaftarOptOut,
+// atau kolom OptOut = YA. Dipanggil otomatis oleh "Kirim sekarang" dan "Kirim bertahap" sebelum
+// konfirmasi, supaya angka "siap kirim" sudah bersih. Kolom OptOut = YA di baris mana pun (termasuk
+// yang sudah SENT) ikut disimpan ke DaftarOptOut. Mengembalikan null bila ada proses lain berjalan.
+function cekDaftarBlokir_() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return null;
+  try {
+    const t = readTable_();
+    const n = t.values.length - 1;
+    const res = { bounce: 0, sementara: 0, optout: 0, optBaru: 0 };
+    if (n < 1) return res;
+    const emailI = t.col[CONFIG.COL_EMAIL];
+    const statusI = t.col[CONFIG.COL_STATUS];
+    const noteI = t.col[CONFIG.COL_NOTE];
+    const optI = (CONFIG.COL_OPTOUT in t.col) ? t.col[CONFIG.COL_OPTOUT] : -1;
+    const bl = readBounceList_();
+    const op = readOptOutList_();
+    const nowMs = Date.now();
+
+    const status = [], note = [], newOpt = [];
+    let changed = false;
+    for (let i = 0; i < n; i++) {
+      const row = t.values[i + 1];
+      status.push(row[statusI]);
+      note.push(row[noteI]);
+      const em = String(row[emailI]).trim().toLowerCase();
+      const optYa = optI >= 0 && OPTOUT_RE.test(String(row[optI]).trim());
+      if (em && optYa) newOpt.push(em);
+
+      const st = String(row[statusI]).trim().toUpperCase();
+      if (st !== '' && st !== 'PENDING') continue;
+      if (!em || row.join('').trim() === '') continue;
+
+      if (optYa || op.set[em]) {
+        status[i] = 'OPTOUT';
+        note[i] = optYa ? 'Penerima berhenti berlangganan' : 'Ada di ' + CONFIG.OPTOUT_SHEET;
+        res.optout++; changed = true;
+        continue;
+      }
+      const e = bl.rows[bl.index[em]];
+      if (e && bounceActive_(e, nowMs)) {
+        const sementara = e.jenis === 'SEMENTARA';
+        status[i] = sementara ? 'BOUNCE_SEMENTARA' : 'BOUNCE';
+        note[i] = 'Daftar bounce: ' + e.alasan + (e.when ? ' (bounce ' + fmtTgl_(e.when) + ')' : '');
+        if (sementara) res.sementara++; else res.bounce++;
+        changed = true;
+      }
+    }
+    if (changed) {
+      t.sh.getRange(2, statusI + 1, n, 1).setValues(status.map(function (v) { return [v]; }));
+      t.sh.getRange(2, noteI + 1, n, 1).setValues(note.map(function (v) { return [v]; }));
+      SpreadsheetApp.flush();
+    }
+    res.optBaru = addOptOut_(op, newOpt, 'Kolom OptOut');
+    return res;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function blokirTeks_(r) {
+  if (!r) return '';
+  const total = r.bounce + r.sementara + r.optout;
+  if (!total) return '';
+  return '\n\nBaru ditahan (tidak akan dikirim): ' + total +
+         '\n  BOUNCE (alamat bermasalah): ' + r.bounce +
+         '\n  BOUNCE_SEMENTARA (inbox penuh dll): ' + r.sementara +
+         '\n  OPTOUT (minta berhenti): ' + r.optout;
+}
+
+function cekDaftarBlokir() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const r = cekDaftarBlokir_();
+    if (!r) throw new Error('Proses kirim lain masih berjalan. Coba lagi beberapa menit.');
+    const total = r.bounce + r.sementara + r.optout;
+    ui.alert('Cek data baru',
+      (total ? blokirTeks_(r).trim() : 'Tidak ada baris baru yang perlu ditahan.') +
+      '\n\nDicocokkan dengan tab ' + CONFIG.BOUNCE_SHEET + ' (' + readBounceList_().rows.length + ' alamat) dan ' +
+      CONFIG.OPTOUT_SHEET + ' (' + readOptOutList_().count + ' alamat).' +
+      (r.optBaru ? '\nAlamat baru dari kolom OptOut yang disimpan ke ' + CONFIG.OPTOUT_SHEET + ': ' + r.optBaru : '') +
+      '\n\nBaris yang ditahan boleh kamu filter lalu hapus dari sheet Data. Daftarnya tetap tersimpan, ' +
+      'jadi saat data yang sama ditempel lagi, alamat itu langsung ditahan lagi.',
+      ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert('Gagal: ' + e.message);
+  }
 }
 
 /* ===================== PENGECEK IZIN (jalankan sekali dari editor) ===================== */

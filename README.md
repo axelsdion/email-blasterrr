@@ -29,6 +29,8 @@ batas kirim 24 jam bergulir, OptOut dari balasan "STOP", dan penanda bounce otom
 Google Sheet
 ├─ Tab "Data"         : data konsumen + kolom kontrol (Status, Waktu Kirim, Keterangan, Template, Jadwal, OptOut)
 ├─ Tab "DaftarBounce" : alamat bermasalah (dibuat otomatis)
+├─ Tab "DaftarOptOut" : alamat yang minta berhenti (dibuat otomatis)
+├─ Tab "RiwayatKirim" : semua kiriman, untuk kirim ulang & hitungan 24 jam (dibuat otomatis)
 └─ Apps Script        : Code.gs + Template.html + Template2.html
 Gmail pengirim (Workspace): kirim via GmailApp, terima balasan STOP & laporan bounce
 ```
@@ -64,3 +66,14 @@ Hati-hati: `clasp push` menimpa semua file di proyek Apps Script dengan isi `src
   Konfirmasi memberi peringatan bila ruang kirim 24 jam lebih kecil dari jumlah siap kirim, atau putaran > 100 email.
 - **Template 3 (vivo V80 Lite 5G)** ditambahkan dan didaftarkan di `CONFIG.TEMPLATES`
   (subjek `{{Nama}}, VIVO V80 Lite 5G 10000mAh kini di Kreditplus!`). Periode promo berakhir **30 November 2026**.
+- **Data bisa di-recycle (kirim ulang ke alamat yang sama).** `DUPLIKAT` tidak lagi berarti "pernah dikirim",
+  tetapi "dikirimi kurang dari `MIN_RESEND_DAYS` (bawaan 7) hari lalu". Status tetap `SENT`; Keterangan berisi
+  `Kiriman ke-1`, `Kiriman ke-2 (pertama …)`, `Kiriman ke-3 (pertama …, sebelumnya …)`.
+  Semua kiriman dicatat di tab baru **`RiwayatKirim`** (dibuat otomatis, diisi awal dari baris SENT/BOUNCE yang ada).
+- **Cek ke daftar bounce & opt-out sebelum kirim.** Menu baru **Cek data baru (DaftarBounce & OptOut)**, dan dijalankan
+  otomatis di awal **Kirim sekarang** / **Kirim bertahap**: baris yang belum dikirim langsung ditandai `BOUNCE`,
+  `BOUNCE_SEMENTARA`, atau `OPTOUT` sehingga angka "siap kirim" sudah bersih.
+- **Opt-out permanen.** Balasan STOP dan kolom `OptOut = YA` disimpan di tab baru **`DaftarOptOut`**, jadi tetap
+  berlaku walaupun barisnya dihapus dan data ditempel ulang.
+- **Hitungan 24 jam tidak turun saat baris `Data` dihapus**: diambil yang terbesar dari sheet `Data` dan `RiwayatKirim`.
+  Kiriman yang ditolak batas Gmail diberi catatan `GAGAL_LIMIT` di `RiwayatKirim` dan tidak dihitung.
